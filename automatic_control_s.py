@@ -24,6 +24,7 @@ import weakref
 import csv
 import cv2
 from pathlib import Path
+import time
 
 try:
     import pygame
@@ -574,6 +575,7 @@ class CameraManager(object):
         self.arr4 = []
         self.t_h = []
         self.s_h = []
+        self.v_h = []
         self.frame_num = []
         self.hud = hud
         self.recording = False
@@ -719,7 +721,9 @@ class CameraManager(object):
             c = self._parent.get_control()
             self.t_h.append(c.throttle)
             self.s_h.append(c.steer)
-
+            v = self._parent.get_velocity()
+            speed = 3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2)
+            self.v_h.append(speed)
 
         if self.recording:
             image.save_to_disk('_out/%08d' % image.frame)
@@ -773,15 +777,36 @@ def game_loop(args):
 
         # Set the agent destination
         spawn_points = world.map.get_spawn_points()
-        #destination = random.choice(spawn_points).location
-        #agent.set_destination(destination)
+        destination = random.choice(spawn_points).location
+        agent.set_destination(destination)
 
         # altered to start recording
-        world.camera_manager.toggle_recording()
+        #world.camera_manager.toggle_recording()
 
         clock = pygame.time.Clock()
 
         start_time = world.hud.simulation_time
+        my_file = Path("_out/automatic_data.csv")
+
+        if my_file.is_file():
+            f = open(my_file, "w+")
+            with open('_out/automatic_data.csv', 'a', newline='') as file:
+                writer = csv.writer(file)
+
+                writer.writerow(["Frame_num", "RGB", "Semantic",
+                                 "Depth", "Lidar",
+                                 "Throttle", "Steer", "Speed"])
+            f.close()
+            pass
+
+        else:
+            with open('_out/automatic_data.csv', 'w', newline='') as file:
+                writer = csv.writer(file)
+
+                writer.writerow(["Frame_num", "RGB", "Semantic",
+                                 "Depth", "Lidar",
+                                 "Throttle", "Steer", "Speed"])
+        t1 = time.time()
 
         while True:
             clock.tick()
@@ -813,29 +838,37 @@ def game_loop(args):
             if world.camera_manager.recording and world.hud.simulation_time - start_time >= args.duration:
                 world.camera_manager.toggle_recording()
 
+           # print((time.time() - t1)%180)
+            if (time.time() - t1) >= 180:
+
+                '''
+                img1 = np.array(world.camera_manager.arr1)
+                img2 = np.array(world.camera_manager.arr2)
+                img3 = np.array(world.camera_manager.arr3)
+                img4 = np.array(world.camera_manager.arr4)
+
+                for i in range(len(img1)):
+                    with open('_out/automatic_data.csv', 'a', newline='') as file:
+                        writer = csv.writer(file)
+                        writer.writerow([world.camera_manager.frame_num[i], img1[i], img2[i], img3[i], img4[i],
+                                         world.camera_manager.t_h[i], world.camera_manager.s_h[i],
+                                         world.camera_manager.v_h[i]])
+                        file.close()
+
+                ## Clear the buffers
+                world.camera_manager.frame_num = []
+                world.camera_manager.arr1 = []
+                world.camera_manager.arr2 = []
+                world.camera_manager.arr3 = []
+                world.camera_manager.arr4 = []
+                world.camera_manager.t_h = []
+                world.camera_manager.s_h = []
+                world.camera_manager.v_h = []
+                '''
+                print('Timeout')
+                break
     finally:
-        my_file = Path("_out/automatic_data.csv")
-
-        if my_file.is_file():
-            f = open(my_file, "w+")
-            with open('_out/automatic_data.csv', 'a', newline='') as file:
-                writer = csv.writer(file)
-
-                writer.writerow(["Frame_num", "RGB", "Semantic",
-                                 "Depth", "Lidar",
-                                 "Throttle", "Steer"])
-            f.close()
-            pass
-
-        else:
-            with open('_out/automatic_data.csv', 'w', newline='') as file:
-                writer = csv.writer(file)
-
-                writer.writerow(["Frame_num", "RGB", "Semantic",
-                                 "Depth", "Lidar",
-                                 "Throttle", "Steer"])
-            f.close()
-
+        print("Save point")
         img1 = np.array(world.camera_manager.arr1)
         img2 = np.array(world.camera_manager.arr2)
         img3 = np.array(world.camera_manager.arr3)
@@ -845,7 +878,7 @@ def game_loop(args):
             with open('_out/automatic_data.csv', 'a', newline='') as file:
                 writer = csv.writer(file)
                 writer.writerow([world.camera_manager.frame_num[i], img1[i], img2[i], img3[i], img4[i],
-                                 world.camera_manager.t_h[i],world.camera_manager.s_h[i]])
+                                 world.camera_manager.t_h[i],world.camera_manager.s_h[i],world.camera_manager.v_h[i]])
                 file.close()
 
         print('RGB Saved')
