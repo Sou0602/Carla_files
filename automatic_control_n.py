@@ -9,7 +9,7 @@
 """Example of automatic vehicle control from client side."""
 
 from __future__ import print_function
-
+import numpy
 import argparse
 import collections
 import datetime
@@ -25,7 +25,8 @@ import csv
 import cv2
 from pathlib import Path
 import time
-
+import collections
+from numpy.matlib import repmat
 try:
     import pygame
     from pygame.locals import KMOD_CTRL
@@ -162,6 +163,9 @@ class World(object):
         self.camera_manager = CameraManager(self.player, self.hud)
         self.camera_manager.transform_index = cam_pos_id
         self.camera_manager.set_sensor(cam_index, notify=False)
+        self.camera_manager.set_sem_sensor()
+        self.camera_manager.set_dep_sensor()
+        self.camera_manager.set_rgb_sensor()
         actor_type = get_actor_display_name(self.player)
         self.hud.notification(actor_type)
 
@@ -561,6 +565,8 @@ class GnssSensor(object):
 # ==============================================================================
 
 
+
+
 class CameraManager(object):
     """ Class for camera management"""
 
@@ -577,21 +583,25 @@ class CameraManager(object):
         self.s_h = []
         self.v_h = []
         self.frame_num = []
+        self.d_frame_num = []
+        self.s_frame_num = []
+        self.r_frame_num = []
+        self.sem_labels = []
         self.hud = hud
         self.recording = False
         bound_y = 0.5 + self._parent.bounding_box.extent.y
         attachment = carla.AttachmentType
         self._camera_transforms = [
             (carla.Transform(
-                carla.Location(x=-5.5, z=2.5), carla.Rotation(pitch=8.0)), attachment.SpringArm),
+                carla.Location(x=0, z=2.5)), attachment.Rigid),
             (carla.Transform(
-                carla.Location(x=1.6, z=1.7)), attachment.Rigid),
+                carla.Location(x=0, z=2.5)), attachment.Rigid),
             (carla.Transform(
-                carla.Location(x=5.5, y=1.5, z=1.5)), attachment.SpringArm),
+                carla.Location(x=0, z=2.5)), attachment.Rigid),
             (carla.Transform(
-                carla.Location(x=-8.0, z=6.0), carla.Rotation(pitch=6.0)), attachment.SpringArm),
+                carla.Location(x=0, z=2.5)), attachment.Rigid),
             (carla.Transform(
-                carla.Location(x=-1, y=-bound_y, z=0.5)), attachment.Rigid)]
+                carla.Location(x=0, z=2.5)), attachment.Rigid)]
         self.transform_index = 1
         self.sensors = [
             ['sensor.camera.rgb', cc.Raw, 'Camera RGB'],
@@ -642,6 +652,51 @@ class CameraManager(object):
             self.hud.notification(self.sensors[index][2])
         self.index = index
 
+
+    def save_sem_image_path(self,image,init_path,array_path,label_arr):
+        array_path.append(image.frame)
+        label_arr.append(self.labels_to_array(image))
+        image.save_to_disk(init_path+'%.8d.jpg' % image.frame,cc.CityScapesPalette)
+
+    def save_dep_image_path(self,image,init_path,array_path):
+        array_path.append(image.frame)
+        image.save_to_disk(init_path+'%.8d.jpg' % image.frame,cc.Depth)
+
+    def save_rgb_image_path(self,image,init_path,array_path):
+        array_path.append(image.frame)
+        image.save_to_disk(init_path+'%.8d.jpg' % image.frame,cc.Raw)
+
+    def set_sem_sensor(self):
+        """Set a semantic sensor"""
+        self.sem_sensor = self._parent.get_world().spawn_actor(
+                self.sensors[5][-1],
+                self._camera_transforms[4][0],
+                attach_to=self._parent,
+                attachment_type=self._camera_transforms[4][1])
+
+
+        self.sem_sensor.listen(lambda image: self.save_sem_image_path(image,'_out/semantic/',self.s_frame_num,self.sem_labels))
+
+    def set_dep_sensor(self):
+        """Set a semantic sensor"""
+        self.dep_sensor = self._parent.get_world().spawn_actor(
+                self.sensors[2][-1],
+                self._camera_transforms[1][0],
+                attach_to=self._parent,
+                attachment_type=self._camera_transforms[1][1])
+
+        self.dep_sensor.listen(lambda image: self.save_dep_image_path(image,'_out/depth/',self.d_frame_num))
+
+    def set_rgb_sensor(self):
+        """Set a semantic sensor"""
+        self.rgb_sensor = self._parent.get_world().spawn_actor(
+                self.sensors[0][-1],
+                self._camera_transforms[1][0],
+                attach_to=self._parent,
+                attachment_type=self._camera_transforms[1][1])
+
+        self.rgb_sensor.listen(lambda image: self.save_rgb_image_path(image,'_out/rgb/',self.r_frame_num))
+
     def next_sensor(self):
         """Get the next sensor"""
         self.set_sensor(self.index + 1)
@@ -655,6 +710,148 @@ class CameraManager(object):
         """Render method"""
         if self.surface is not None:
             display.blit(self.surface, (0, 0))
+
+    def _update_arr2(self ,img):
+        print('in update')
+        array2 = np.frombuffer(img.raw_data, dtype=np.dtype("uint8"))
+        array2 = np.reshape(array2, (img.height, img.width, 4))
+        array2 = array2[:, :, :3]
+        array2 = array2[:, :, ::-1]
+        #self.arr2.append(np.array(array2))
+        return np.array(array2)
+    ####################################################################################################################
+    ## Convert Methods
+    def depth_to_logarithmic_grayscale(self, image):
+        """
+        Convert an image containing CARLA encoded depth-map to a logarithmic
+        grayscale image array.
+        "max_depth" is used to omit the points that are far enough.
+        """
+        normalized_depth = self.depth_to_array(image)
+        # Convert to logarithmic depth.
+        logdepth = numpy.ones(normalized_depth.shape) + \
+                   (numpy.log(normalized_depth) / 5.70378)
+        logdepth = numpy.clip(logdepth, 0.0, 1.0)
+        logdepth *= 255.0
+        # Expand to three colors.
+        return numpy.repeat(logdepth[:, :, numpy.newaxis], 3, axis=2)
+
+    def to_bgra_array(self,image):
+        """Convert a CARLA raw image to a BGRA numpy array."""
+        if not isinstance(image, carla.Image):
+            raise ValueError("Argument must be a carla.sensor.Image")
+        array = numpy.frombuffer(image.raw_data, dtype=numpy.dtype("uint8"))
+        array = numpy.reshape(array, (image.height, image.width, 4))
+        return array
+
+    def to_rgb_array(self,image):
+        """Convert a CARLA raw image to a RGB numpy array."""
+        array = self.to_bgra_array(image)
+        # Convert BGRA to RGB.
+        array = array[:, :, :3]
+        array = array[:, :, ::-1]
+        return array
+
+    def labels_to_array(self,image):
+        """
+        Convert an image containing CARLA semantic segmentation labels to a 2D array
+        containing the label of each pixel.
+        """
+        return self.to_bgra_array(image)[:, :, 2]
+
+    def labels_to_cityscapes_palette(self,image):
+        """
+        Convert an image containing CARLA semantic segmentation labels to
+        Cityscapes palette.
+        """
+        classes = {
+            0: [0, 0, 0],  # None
+            1: [70, 70, 70],  # Buildings
+            2: [190, 153, 153],  # Fences
+            3: [72, 0, 90],  # Other
+            4: [220, 20, 60],  # Pedestrians
+            5: [153, 153, 153],  # Poles
+            6: [157, 234, 50],  # RoadLines
+            7: [128, 64, 128],  # Roads
+            8: [244, 35, 232],  # Sidewalks
+            9: [107, 142, 35],  # Vegetation
+            10: [0, 0, 255],  # Vehicles
+            11: [102, 102, 156],  # Walls
+            12: [220, 220, 0]  # TrafficSigns
+        }
+        array = self.labels_to_array(image)
+        result = numpy.zeros((array.shape[0], array.shape[1], 3))
+        for key, value in classes.items():
+            result[numpy.where(array == key)] = value
+        return result
+
+    def depth_to_array(self,image):
+        """
+        Convert an image containing CARLA encoded depth-map to a 2D array containing
+        the depth value of each pixel normalized between [0.0, 1.0].
+        """
+        array = self.to_bgra_array(image)
+        array = array.astype(numpy.float32)
+        # Apply (R + G * 256 + B * 256 * 256) / (256 * 256 * 256 - 1).
+        normalized_depth = numpy.dot(array[:, :, :3], [65536.0, 256.0, 1.0])
+        normalized_depth /= 16777215.0  # (256.0 * 256.0 * 256.0 - 1.0)
+        return normalized_depth
+
+    def depth_to_local_point_cloud(self,image, color=None, max_depth=0.9):
+        """
+        Convert an image containing CARLA encoded depth-map to a 2D array containing
+        the 3D position (relative to the camera) of each pixel and its corresponding
+        RGB color of an array.
+        "max_depth" is used to omit the points that are far enough.
+        """
+        far = 1000.0  # max depth in meters.
+        normalized_depth = self.depth_to_array(image)
+
+        # (Intrinsic) K Matrix
+        k = numpy.identity(3)
+        k[0, 2] = image.width / 2.0
+        k[1, 2] = image.height / 2.0
+        k[0, 0] = k[1, 1] = image.width / \
+                            (2.0 * math.tan(image.fov * math.pi / 360.0))
+
+        # 2d pixel coordinates
+        pixel_length = image.width * image.height
+        u_coord = repmat(numpy.r_[image.width - 1:-1:-1],
+                         image.height, 1).reshape(pixel_length)
+        v_coord = repmat(numpy.c_[image.height - 1:-1:-1],
+                         1, image.width).reshape(pixel_length)
+        if color is not None:
+            color = color.reshape(pixel_length, 3)
+        normalized_depth = numpy.reshape(normalized_depth, pixel_length)
+
+        # Search for pixels where the depth is greater than max_depth to
+        # delete them
+        max_depth_indexes = numpy.where(normalized_depth > max_depth)
+        normalized_depth = numpy.delete(normalized_depth, max_depth_indexes)
+        u_coord = numpy.delete(u_coord, max_depth_indexes)
+        v_coord = numpy.delete(v_coord, max_depth_indexes)
+        if color is not None:
+            color = numpy.delete(color, max_depth_indexes, axis=0)
+
+        # pd2 = [u,v,1]
+        p2d = numpy.array([u_coord, v_coord, numpy.ones_like(u_coord)])
+
+        # P = [X,Y,Z]
+        p3d = numpy.dot(numpy.linalg.inv(k), p2d)
+        p3d *= normalized_depth * far
+
+        # Formating the output to:
+        # [[X1,Y1,Z1,R1,G1,B1],[X2,Y2,Z2,R2,G2,B2], ... [Xn,Yn,Zn,Rn,Gn,Bn]]
+        if color is not None:
+            # numpy.concatenate((numpy.transpose(p3d), color), axis=1)
+            return sensor.PointCloud(
+                image.frame_number,
+                numpy.transpose(p3d),
+                color_array=color)
+        # [[X1,Y1,Z1],[X2,Y2,Z2], ... [Xn,Yn,Zn]]
+        return sensor.PointCloud(image.frame_number, numpy.transpose(p3d))
+    ####################################################################################################################
+
 
     @staticmethod
     def _parse_image(weak_self, image):
@@ -680,30 +877,61 @@ class CameraManager(object):
             array = np.reshape(array, (image.height, image.width, 4))
             array = array[:, :, :3]
             array = array[:, :, ::-1]
+            self.arr1.append(np.array(array))
             self.surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
 
+            image.convert(cc.Depth)
+            array2 = self.depth_to_array(image)
+            self.arr2.append(np.array(array2))
+            '''''
             image.convert(self.sensors[0][1])
             array1 = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
             array1 = np.reshape(array1, (image.height, image.width, 4))
             array1 = array1[:, :, :3]
             array1 = array1[:, :, ::-1]
             self.arr1.append(np.array(array1))
+            '''''
 
+            '''''
             image.convert(self.sensors[5][1])
             array2 = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
             array2 = np.reshape(array2, (image.height, image.width, 4))
             array2 = array2[:, :, :3]
             array2 = array2[:, :, ::-1]
             self.arr2.append(np.array(array2))
+            '''''
 
-            image.convert(self.sensors[1][1])
+            ############################################################################################################
+            '''''           
+            sem_sensor = self._parent.get_world().spawn_actor(
+                self.sensors[5][-1],
+                self._camera_transforms[4][0],
+                attach_to=self._parent,
+                attachment_type=carla.AttachmentType.Rigid)
+
+            sem_sensor.listen(lambda im: self._update_arr2(im))
+            self.arr2.append(img_arr)
+            #image.convert(cc.CityScapesPalette)
+            #array2 = np.frombuffer(image1.raw_data, dtype=np.dtype("uint8"))
+            #array2 = np.reshape(array2, (image1.height, image1.width, 4))
+            #array2 = array2[:, :, :3]
+            #array2 = array2[:, :, ::-1]
+            #self.arr2.append(np.array(array2))
+
+            sem_sensor.destroy()
+            '''''
+            ############################################################################################################
+            #image.convert(self.sensors[2][1])
+            '''''
             array3 = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
             array3 = np.reshape(array3, (image.height, image.width, 4))
             array3 = array3[:, :, :3]
             array3 = array3[:, :, ::-1]
             self.arr3.append(np.array(array3))
+            '''''
 
             image.convert(self.sensors[self.index][1])
+
             '''''
             points = np.frombuffer(image.raw_data, dtype=np.dtype('f4'))
             points = np.reshape(points, (int(points.shape[0] / 4), 4))
@@ -718,7 +946,6 @@ class CameraManager(object):
             '''''
 
             self.frame_num.append(image.frame)
-
             c = self._parent.get_control()
             self.t_h.append(c.throttle)
             self.s_h.append(c.steer)
@@ -787,15 +1014,16 @@ def game_loop(args):
         clock = pygame.time.Clock()
 
         start_time = world.hud.simulation_time
-        my_file = Path("_out/automatic_data.csv")
+        '''''
+        my_file = Path("_out/automatic_data_1.csv")
 
         if my_file.is_file():
             f = open(my_file, "w+")
-            with open('_out/automatic_data.csv', 'a', newline='') as file:
+            with open('_out/automatic_data_1.csv', 'a', newline='') as file:
                 writer = csv.writer(file)
 
                 writer.writerow(["Frame_num", "RGB", "Semantic",
-                                 "Depth", "Lidar",
+                                 "Depth", "Lidar","Semantic Labels",
                                  "Throttle", "Steer", "Speed"])
             f.close()
             pass
@@ -805,8 +1033,9 @@ def game_loop(args):
                 writer = csv.writer(file)
 
                 writer.writerow(["Frame_num", "RGB", "Semantic",
-                                 "Depth", "Lidar",
+                                 "Depth", "Lidar","Semantic Labels",
                                  "Throttle", "Steer", "Speed"])
+        '''''
         t1 = time.time()
 
         while True:
@@ -840,7 +1069,7 @@ def game_loop(args):
                 world.camera_manager.toggle_recording()
 
            # print((time.time() - t1)%180)
-            if (time.time() - t1) >= 120:
+            if (time.time() - t1) >= 900:
 
                 '''
                 img1 = np.array(world.camera_manager.arr1)
@@ -870,29 +1099,57 @@ def game_loop(args):
                 break
     finally:
         print("Save point")
-        img1 = np.array(world.camera_manager.arr1)
-        img2 = np.array(world.camera_manager.arr2)
-        img3 = np.array(world.camera_manager.arr3)
-        img4 = np.array(world.camera_manager.arr4)
 
-        for i in range(len(img1)):
+        my_file = Path("_out/automatic_data.csv")
 
-            cv2.imwrite("_out/rgb/%08d.png" % (world.camera_manager.frame_num[i]), img1[i])
-            cv2.imwrite("_out/semantic/%08d.png" % (world.camera_manager.frame_num[i]), img2[i])
-            cv2.imwrite("_out/depth/%08d.png" % (world.camera_manager.frame_num[i]), img3[i])
+        if my_file.is_file():
+            '''''
+            f = open(my_file, "w+")
+            with open('_out/automatic_data.csv', 'a', newline='') as file:
+                writer = csv.writer(file)
+
+                writer.writerow(["Frame_num", "RGB", "Semantic",
+                                 "Depth", "Lidar", "Semantic Labels",
+                                 "Throttle", "Steer", "Speed"])
+            f.close()
+            '''''
+            pass
+
+        else:
+            with open('_out/automatic_data.csv', 'w', newline='') as file:
+                writer = csv.writer(file)
+
+                writer.writerow(["Frame_num", "RGB", "Semantic",
+                                 "Depth", "Lidar", "Semantic Labels",
+                                 "Throttle", "Steer", "Speed"])
+
+
+        start_frame = world.camera_manager.r_frame_num[0]
+        end_frame = world.camera_manager.frame_num[-1]
+        valid_frames = np.arange(start_frame,end_frame)
+        frame_n_adj = world.camera_manager.r_frame_num[0] - world.camera_manager.frame_num[0]
+        s_frame_adj = world.camera_manager.r_frame_num[0] - world.camera_manager.s_frame_num[0]
+
+        for i in range(len(valid_frames)):
+
+           #cv2.imwrite("_out/rgb/%08d.png" % (world.camera_manager.frame_num[i]), img1[i])
+           # cv2.imwrite("_out/depth/%08d.png" % (world.camera_manager.frame_num[i]), img3[i])
            # cv2.imwrite("_out/lidar/%08d.txt" % (world.camera_manager.frame_num[i]), img4[i])
 
 
             with open('_out/automatic_data.csv', 'a', newline='') as file:
                 writer = csv.writer(file)
-                writer.writerow([world.camera_manager.frame_num[i],"_out/rgb/%08d.png" % (world.camera_manager.frame_num[i]),
-                                 "_out/semantic/%08d.png" % (world.camera_manager.frame_num[i]),
-                                 "_out/depth/%08d.png" % (world.camera_manager.frame_num[i]),
-                                 "lidar path",
-                                 world.camera_manager.t_h[i],world.camera_manager.s_h[i],world.camera_manager.v_h[i]])
+                writer.writerow([valid_frames[i],"_out/rgb/%08d.jpg" % (valid_frames[i]),
+                                 "_out/semantic/%08d.jpg" % (valid_frames[i]),
+                                 "_out/depth/%08d.jpg" % (valid_frames[i]),
+                                 world.camera_manager.arr2[frame_n_adj + i],
+                                 world.camera_manager.sem_labels[s_frame_adj+i],
+                                 world.camera_manager.t_h[frame_n_adj + i],
+                                 world.camera_manager.s_h[frame_n_adj + i],
+                                 world.camera_manager.v_h[frame_n_adj + i]])
                 file.close()
 
-        print('RGB Saved')
+        print('CSV Saved')
 
         if world is not None:
             settings = world.world.get_settings()
@@ -902,7 +1159,9 @@ def game_loop(args):
             traffic_manager.set_synchronous_mode(True)
 
             world.destroy()
-
+            world.camera_manager.sem_sensor.destroy()
+            world.camera_manager.dep_sensor.destroy()
+            world.camera_manager.rgb_sensor.destroy()
         pygame.quit()
 
 
