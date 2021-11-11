@@ -653,13 +653,16 @@ class CameraManager(object):
         self.index = index
 
 
-    def save_sem_image_path(self,image,init_path,array_path,label_arr):
+    def save_sem_image_path(self,image,init_path,array_path):
         array_path.append(image.frame)
-        label_arr.append(self.labels_to_array(image))
+        lab_arr = self.labels_to_array(image)
+        np.savetxt(init_path+'%.8d.csv' % image.frame,lab_arr,delimiter=',')
         image.save_to_disk(init_path+'%.8d.jpg' % image.frame,cc.CityScapesPalette)
 
     def save_dep_image_path(self,image,init_path,array_path):
         array_path.append(image.frame)
+        dep_arr = self.depth_to_array(image)
+        np.savetxt(init_path + '%.8d.csv' % image.frame, dep_arr, delimiter=',')
         image.save_to_disk(init_path+'%.8d.jpg' % image.frame,cc.Depth)
 
     def save_rgb_image_path(self,image,init_path,array_path):
@@ -675,7 +678,7 @@ class CameraManager(object):
                 attachment_type=self._camera_transforms[4][1])
 
 
-        self.sem_sensor.listen(lambda image: self.save_sem_image_path(image,'_out/semantic/',self.s_frame_num,self.sem_labels))
+        self.sem_sensor.listen(lambda image: self.save_sem_image_path(image,'_out/semantic/',self.s_frame_num))
 
     def set_dep_sensor(self):
         """Set a semantic sensor"""
@@ -1142,8 +1145,8 @@ def game_loop(args):
                 writer.writerow([valid_frames[i],"_out/rgb/%08d.jpg" % (valid_frames[i]),
                                  "_out/semantic/%08d.jpg" % (valid_frames[i]),
                                  "_out/depth/%08d.jpg" % (valid_frames[i]),
-                                 world.camera_manager.arr2[frame_n_adj + i],
-                                 world.camera_manager.sem_labels[s_frame_adj+i],
+                                 "_out/depth/%08d.csv" % (valid_frames[i]),
+                                 "_out/semantic/%08d.csv" % (valid_frames[i]),
                                  world.camera_manager.t_h[frame_n_adj + i],
                                  world.camera_manager.s_h[frame_n_adj + i],
                                  world.camera_manager.v_h[frame_n_adj + i]])
